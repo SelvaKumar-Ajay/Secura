@@ -3,6 +3,8 @@ Secura 🔐
 A simple yet secure password manager built with Flutter & Firestore.
 Secura uses modern cryptography (AES-GCM 256-bit) to encrypt all sensitive data before it ever leaves your device. Your passwords stay yours.
 
+<img width="672" height="1245" alt="Image" src="https://github.com/user-attachments/assets/49917ee5-df54-4e0f-8824-a7332c773939" />
+
 ✨ Features
 
 🔑 Master Key Encryption — AES-GCM 256-bit protects your stored entries.
