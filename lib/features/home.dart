@@ -24,6 +24,17 @@ class _HomeScreenState extends State<HomeScreen> {
   // Debouncer with 700ms delay
   final Debouncer _debouncer = Debouncer(milliSecs: 700);
 
+  // filter helpers
+  String? _selectedFilter;
+  final Map<String, Color> categoryColors = {
+    'Banking': Colors.green.shade400,
+    'Social': Colors.blue.shade400,
+    'Shopping': Colors.orange.shade400,
+    'Work': Colors.purple.shade400,
+    'Entertainment': Colors.red.shade400,
+    'General': Colors.grey.shade500,
+  };
+
   @override
   void initState() {
     super.initState();
@@ -65,6 +76,8 @@ class _HomeScreenState extends State<HomeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final passwordService = context.watch<PasswordService>();
+
     return Scaffold(
       appBar: AppBar(
         title: _isSearching
@@ -91,6 +104,24 @@ class _HomeScreenState extends State<HomeScreen> {
               icon: const Icon(Icons.search),
               tooltip: 'Search',
               onPressed: _startSearch,
+            ),
+            PopupMenuButton<SortOrder>(
+              icon: const Icon(Icons.sort),
+              tooltip: 'Sort',
+              onSelected: (SortOrder result) {
+                passwordService.setSortOrder(result);
+              },
+              itemBuilder: (BuildContext context) =>
+                  <PopupMenuEntry<SortOrder>>[
+                    const PopupMenuItem<SortOrder>(
+                      value: SortOrder.byDate,
+                      child: Text('Sort by Date'),
+                    ),
+                    const PopupMenuItem<SortOrder>(
+                      value: SortOrder.byAccountName,
+                      child: Text('Sort by Name'),
+                    ),
+                  ],
             ),
             IconButton(
               padding: EdgeInsets.zero,
@@ -128,12 +159,24 @@ class _HomeScreenState extends State<HomeScreen> {
             );
           }
 
-          // Filter passwords based on search text
+          // Build category list dynamically (exclude 'Other' if you want)
+          final categories =
+              passwordService.passwords.map((e) => e.category).toSet().toList()
+                ..remove('Other')
+                ..sort();
+
+          // Filter passwords based on search and selected category
           final filteredPasswords = passwordService.passwords.where((entry) {
-            final account = entry.account.toLowerCase();
-            final username = entry.username.toLowerCase();
-            final query = _searchText.toLowerCase();
-            return account.contains(query) || username.contains(query);
+            final matchesSearch =
+                entry.account.toLowerCase().contains(
+                  _searchText.toLowerCase(),
+                ) ||
+                entry.username.toLowerCase().contains(
+                  _searchText.toLowerCase(),
+                );
+            final matchesCategory =
+                _selectedFilter == null || entry.category == _selectedFilter;
+            return matchesSearch && matchesCategory;
           }).toList();
 
           if (filteredPasswords.isEmpty) {
@@ -150,12 +193,61 @@ class _HomeScreenState extends State<HomeScreen> {
             onRefresh: () async {
               await context.read<PasswordService>().loadPasswords();
             },
-            child: ListView.builder(
-              itemCount: filteredPasswords.length,
-              itemBuilder: (context, index) {
-                final entry = filteredPasswords[index];
-                return PasswordTile(passwordEntry: entry);
-              },
+            child: ListView(
+              padding: const EdgeInsets.only(bottom: 80),
+              children: [
+                SingleChildScrollView(
+                  scrollDirection: Axis.horizontal,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 8,
+                  ),
+                  child: Row(
+                    children: [
+                      // 'All' chip
+                      ChoiceChip(
+                        label: const Text('All'),
+                        selected: _selectedFilter == null,
+                        selectedColor: Colors.teal.shade300,
+                        backgroundColor: Colors.grey.shade300,
+                        labelStyle: TextStyle(
+                          color: _selectedFilter == null
+                              ? Colors.white
+                              : Colors.black87,
+                        ),
+                        onSelected: (_) =>
+                            setState(() => _selectedFilter = null),
+                      ),
+                      const SizedBox(width: 8),
+                      // Category chips
+                      ...categories.map((cat) {
+                        final color =
+                            categoryColors[cat] ?? Colors.teal.shade300;
+                        return Padding(
+                          padding: const EdgeInsets.only(right: 8),
+                          child: ChoiceChip(
+                            label: Text(cat),
+                            selected: _selectedFilter == cat,
+                            selectedColor: color,
+                            backgroundColor: color.withValues(alpha: 0.3),
+                            labelStyle: TextStyle(
+                              color: _selectedFilter == cat
+                                  ? Colors.white
+                                  : color,
+                              fontWeight: FontWeight.bold,
+                            ),
+                            onSelected: (_) =>
+                                setState(() => _selectedFilter = cat),
+                          ),
+                        );
+                      }),
+                    ],
+                  ),
+                ),
+
+                // Password entries
+                ...filteredPasswords.map((e) => PasswordTile(passwordEntry: e)),
+              ],
             ),
           );
         },
@@ -194,16 +286,23 @@ class _PasswordTileState extends State<PasswordTile> {
           children: [
             const Icon(Icons.check_circle, color: Colors.green),
             const SizedBox(width: 10),
-            Text('$label copied to clipboard'),
+            Text('$label copied to clipboard for 30s'),
           ],
         ),
         behavior: SnackBarBehavior.floating,
       ),
     );
+    Future.delayed(const Duration(seconds: 30), () {
+      Clipboard.setData(const ClipboardData(text: ''));
+    });
   }
 
   @override
   Widget build(BuildContext context) {
+    final hasWebsite = widget.passwordEntry.website?.isNotEmpty ?? false;
+    final faviconUrl =
+        'https://www.google.com/s2/favicons?sz=64&domain_url=${widget.passwordEntry.website?.toLowerCase()}';
+
     return Card(
       margin: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
@@ -221,18 +320,30 @@ class _PasswordTileState extends State<PasswordTile> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // Account name and username/email block
+            // Account name + username/email
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                const CircleAvatar(
+                CircleAvatar(
                   radius: 24,
                   backgroundColor: Colors.white,
-                  child: Icon(
-                    Icons.vpn_key_outlined,
-                    color: Colors.teal,
-                    size: 28,
-                  ),
+                  child: hasWebsite
+                      ? Image.network(
+                          faviconUrl,
+                          fit: BoxFit.contain,
+                          errorBuilder: (context, error, stackTrace) {
+                            return const Icon(
+                              Icons.vpn_key_outlined,
+                              color: Colors.teal,
+                              size: 28,
+                            );
+                          },
+                        )
+                      : const Icon(
+                          Icons.vpn_key_outlined,
+                          color: Colors.teal,
+                          size: 28,
+                        ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
@@ -247,6 +358,7 @@ class _PasswordTileState extends State<PasswordTile> {
                           color: Colors.white,
                         ),
                       ),
+                      const SizedBox(height: 2),
                       Row(
                         children: [
                           Expanded(
@@ -264,7 +376,6 @@ class _PasswordTileState extends State<PasswordTile> {
                             icon: const Icon(
                               Icons.copy,
                               size: 20,
-
                               color: Colors.white,
                             ),
                             tooltip: 'Copy Email/Username',
@@ -333,8 +444,63 @@ class _PasswordTileState extends State<PasswordTile> {
                 ),
               ],
             ),
+            const SizedBox(height: 10),
+            const Divider(color: Colors.white24, thickness: 0.8),
+            const SizedBox(height: 12),
 
-            // Edit and Delete actions at the bottom
+            Wrap(
+              runSpacing: 8,
+              spacing: 8,
+              children: [
+                if (widget.passwordEntry.category.isNotEmpty)
+                  _infoRow(
+                    Icons.category_outlined,
+                    widget.passwordEntry.category,
+                    "Category",
+                  ),
+                if (widget.passwordEntry.website?.isNotEmpty ?? false)
+                  _infoRow(
+                    Icons.link,
+                    widget.passwordEntry.website!,
+                    "Website",
+                  ),
+                if (widget.passwordEntry.recoveryEmail?.isNotEmpty ?? false)
+                  _infoRow(
+                    Icons.email_outlined,
+                    widget.passwordEntry.recoveryEmail!,
+                    "Recovery Email",
+                  ),
+                if (widget.passwordEntry.hint?.isNotEmpty ?? false)
+                  _infoRow(
+                    Icons.lightbulb_outline,
+                    widget.passwordEntry.hint!,
+                    "Hint",
+                  ),
+                if (widget.passwordEntry.securityQuestion?.isNotEmpty ?? false)
+                  _infoRow(
+                    Icons.help_outline,
+                    widget.passwordEntry.securityQuestion!,
+                    "Security Question",
+                  ),
+                if (widget.passwordEntry.securityAnswer?.isNotEmpty ?? false)
+                  _infoRow(
+                    Icons.question_answer_outlined,
+                    widget.passwordEntry.securityAnswer!,
+                    "Security Answer",
+                  ),
+                if (widget.passwordEntry.notes?.isNotEmpty ?? false)
+                  _infoRow(
+                    Icons.note_outlined,
+                    widget.passwordEntry.notes!,
+                    "Notes",
+                  ),
+              ],
+            ),
+
+            const SizedBox(height: 8),
+            const Divider(color: Colors.white24, thickness: 0.8),
+
+            // Footer actions
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
@@ -447,6 +613,47 @@ class _PasswordTileState extends State<PasswordTile> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _infoRow(IconData icon, String value, String label) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Icon(icon, size: 18, color: Colors.white70),
+        const SizedBox(width: 8),
+        Expanded(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                label,
+                style: const TextStyle(
+                  color: Colors.white70,
+                  fontSize: 12,
+                  fontWeight: FontWeight.w500,
+                ),
+              ),
+              Text(
+                value,
+                style: const TextStyle(
+                  color: Colors.white,
+                  fontSize: 14,
+                  height: 1.3,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ],
+          ),
+        ),
+        IconButton(
+          padding: EdgeInsets.zero,
+          icon: const Icon(Icons.copy, size: 18, color: Colors.white70),
+          tooltip: 'Copy $label',
+          onPressed: () =>
+              _copyToClipboard(widget.passwordEntry.username, 'Username/Email'),
+        ),
+      ],
     );
   }
 }

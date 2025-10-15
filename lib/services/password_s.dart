@@ -4,6 +4,8 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import '../models/password_data_mdl.dart';
 import 'auth_s.dart';
 
+enum SortOrder { byDate, byAccountName }
+
 /// Will fetch and manipulate data from firestore
 ///
 class PasswordService with ChangeNotifier {
@@ -12,7 +14,9 @@ class PasswordService with ChangeNotifier {
 
   List<PasswordEntry> _passwords = [];
   bool _isLoading = false;
+  String? _error;
   bool _disposed = false;
+  SortOrder _sortOrder = SortOrder.byDate;
 
   String? get _userId => _authService?.user?.uid;
 
@@ -28,12 +32,31 @@ class PasswordService with ChangeNotifier {
 
   List<PasswordEntry> get passwords => _passwords;
   bool get isLoading => _isLoading;
+  String? get error => _error;
+  SortOrder get sortOrder => _sortOrder;
   dynamic get _masterKey => _authService?.masterKey; // SecretKey
   dynamic get masterKey => _masterKey; // SecretKey
 
   /// Returns a reference to the user's private password collection in Firestore.
   CollectionReference<Map<String, dynamic>> get _passwordsCollection =>
       _firestore.collection('users').doc(_userId).collection('passwords');
+
+  void _sortPasswords() {
+    switch (_sortOrder) {
+      case SortOrder.byDate:
+        _passwords.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+        break;
+      case SortOrder.byAccountName:
+        _passwords.sort((a, b) => a.account.toLowerCase().compareTo(b.account.toLowerCase()));
+        break;
+    }
+  }
+
+  void setSortOrder(SortOrder order) {
+    _sortOrder = order;
+    _sortPasswords();
+    notifyListeners();
+  }
 
   /// Load passwords from Firestore, waits for master key if not available yet
   Future<void> loadPasswords() async {
@@ -57,6 +80,7 @@ class PasswordService with ChangeNotifier {
     }
 
     _isLoading = true;
+    _error = null;
     notifyListeners();
 
     try {
@@ -66,9 +90,11 @@ class PasswordService with ChangeNotifier {
           return PasswordEntry.fromFirestore(doc.data(), _masterKey!);
         }).toList(),
       );
+      _sortPasswords();
     } catch (e) {
       _passwords = [];
-      debugPrint("Error loading passwords from Firestore: $e");
+      _error = "Error loading passwords from Firestore: $e";
+      debugPrint(_error);
     }
 
     _isLoading = false;
@@ -96,6 +122,7 @@ class PasswordService with ChangeNotifier {
     final encrypted = await PasswordEntry.toFirestore(entry, _masterKey);
     await _passwordsCollection.doc(entry.id).set(encrypted);
     _passwords.add(entry);
+    _sortPasswords();
     notifyListeners();
   }
 
@@ -109,6 +136,7 @@ class PasswordService with ChangeNotifier {
     final index = _passwords.indexWhere((p) => p.id == updatedEntry.id);
     if (index != -1) {
       _passwords[index] = updatedEntry;
+      _sortPasswords();
       notifyListeners();
     }
   }

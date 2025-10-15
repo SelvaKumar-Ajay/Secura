@@ -1,6 +1,4 @@
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
-import 'dart:convert';
-import 'dart:math';
 
 /// [SecurePrefs] will used to store senstive informations
 /// Cause it uses platform specific secured storage (iOS Keychain, Android Keystore/EncryptedSharedPreferences)
@@ -13,26 +11,6 @@ class SecurePrefs {
   );
   static final FlutterSecureStorage _secureStorage =
       const FlutterSecureStorage();
-
-  // Key name where we persist the AES key (base64)
-  static const String _masterKeyName = 'master_encryption_key_v1';
-
-  /// Get or generate a 32-byte AES key (base64 encoded)
-  static Future<String> getOrCreateMasterKey() async {
-    var key = await _secureStorage.read(key: _masterKeyName);
-    if (key == null) {
-      final rnd = Random.secure();
-      final bytes = List<int>.generate(32, (_) => rnd.nextInt(256));
-      key = base64UrlEncode(bytes);
-      await _secureStorage.write(
-        key: _masterKeyName,
-        value: key,
-        iOptions: _iosOptions,
-        aOptions: _androidOptions,
-      );
-    }
-    return key;
-  }
 
   /// Securely write with key and platform options
   static Future<void> writeSecure(String key, String value) async =>

@@ -1,15 +1,22 @@
 import 'package:firebase_core/firebase_core.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'features/auth_wrapper.dart';
 import 'services/auth_s.dart';
 import 'services/password_s.dart';
+import 'services/prefs_s.dart';
 
 void main() async {
   // Ensure Flutter is initialized.
   WidgetsFlutterBinding.ensureInitialized();
+  SystemChrome.setPreferredOrientations([
+    DeviceOrientation.portraitUp,
+    DeviceOrientation.portraitDown,
+  ]);
   // Initialize Firebase
-  await Firebase.initializeApp();
+  await Future.wait([Firebase.initializeApp(), Prefs.init()]);
+
   runApp(const MyApp());
 }
 

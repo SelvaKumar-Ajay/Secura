@@ -142,7 +142,6 @@ class AuthService with ChangeNotifier {
 
       // After successful Firebase login, prompt for biometrics to unlock the app.
       await SecurePrefs.writeSecure('email', email);
-      await authenticateWithBiometrics();
 
       final uid = cred.user!.uid;
 
