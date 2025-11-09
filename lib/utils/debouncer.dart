@@ -13,12 +13,12 @@ class Debouncer {
 
   Debouncer({required this.milliSecs});
 
-  run(VoidCallback action) {
+  void run(VoidCallback action) {
     _timer?.cancel();
     _timer = Timer(Duration(milliseconds: milliSecs), action);
   }
 
-  dipose() {
+  void dipose() {
     _timer?.cancel();
   }
 }

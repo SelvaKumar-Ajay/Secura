@@ -1,6 +1,6 @@
-import 'package:flutter/material.dart';
-import 'package:clipboard/clipboard.dart';
 import 'dart:math';
+import 'package:flutter/material.dart';
+import 'package:password_manager/utils/clipboard_handler.dart';
 
 class PasswordGeneratorScreen extends StatefulWidget {
   const PasswordGeneratorScreen({super.key});
@@ -83,15 +83,10 @@ class _PasswordGeneratorScreenState extends State<PasswordGeneratorScreen> {
                   IconButton(
                     icon: const Icon(Icons.copy),
                     onPressed: () {
-                      FlutterClipboard.copy(_generatedPassword);
-                      Future.delayed(
-                        const Duration(seconds: 30),
-                        () => FlutterClipboard.copy(''),
-                      );
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        const SnackBar(
-                          content: Text('Password copied to clipboard for 30s'),
-                        ),
+                      ClipboardHandler.copyToClipboard(
+                        context,
+                        text: _generatedPassword,
+                        label: 'Password',
                       );
                     },
                   ),

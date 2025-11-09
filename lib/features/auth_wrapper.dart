@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:password_manager/features/unlock_screen.dart';
 import 'package:provider/provider.dart';
 import '../services/auth_s.dart';
 import 'auth.dart';
@@ -31,7 +32,10 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final authProvider = context.read<AuthService>();
-    if (authProvider.isAuthenticated && state == AppLifecycleState.resumed) {
+    // Only lock the app if the key is already in memory (i.e., not on a cold start)
+    if (authProvider.isAuthenticated &&
+        authProvider.masterKey != null &&
+        state == AppLifecycleState.resumed) {
       // If an auth flow (biometric prompt) is running, skip locking to avoid the
       // pause/resume race. Also skip if unlocked very recently.
       if (!authProvider.authInProgress &&
@@ -45,15 +49,24 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
   Widget build(BuildContext context) {
     final authProvider = context.watch<AuthService>();
 
+    // 1. If user is not logged in via Firebase, show the login/signup screen.
     if (!authProvider.isAuthenticated) {
-      // If user is not logged in via Firebase, show the login screen.
       return const LoginScreen();
     }
+
+    // 2. If user is logged in, but the master key is not in memory (cold start),
+    //    show the unlock screen to prompt for the master password.
+    if (authProvider.masterKey == null) {
+      return const UnlockScreen();
+    }
+
+    // From here, we know the user is authenticated AND the master key is in memory.
 
     if (authProvider.isCheckingBiometrics) {
       return const Scaffold(body: Center(child: CircularProgressIndicator()));
     }
 
+    // 3. If the app is locked (e.g., resumed from background), show the biometric prompt.
     if (authProvider.isAppLocked && authProvider.canCheckBiometrics) {
       return Scaffold(
         backgroundColor: Colors.teal.shade900,
@@ -93,7 +106,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
                 'Use biometrics to unlock your vault',
                 style: TextStyle(
                   fontSize: 16,
-                  color: Colors.tealAccent.shade100.withValues(alpha: 0.8),
+                  color: Colors.tealAccent.shade100.withAlpha(200),
                 ),
               ),
 
@@ -112,9 +125,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
                     borderRadius: BorderRadius.circular(30),
                   ),
                   elevation: 6,
-                  shadowColor: Colors.tealAccent.shade100.withValues(
-                    alpha: 0.6,
-                  ),
+                  shadowColor: Colors.tealAccent.shade100.withAlpha(150),
                 ),
                 icon: const Icon(Icons.fingerprint, size: 28),
                 label: const Text(
@@ -131,7 +142,7 @@ class _AuthGateState extends State<AuthGate> with WidgetsBindingObserver {
       );
     }
 
-    // If authenticated and unlocked, show the home screen.
+    // 4. If authenticated, unlocked, and key is present, show the home screen.
     return const HomeScreen();
   }
 }

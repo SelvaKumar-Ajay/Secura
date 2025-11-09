@@ -1,12 +1,40 @@
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
 import '../models/password_data_mdl.dart';
 import '../services/auth_s.dart';
 import '../services/fss_s.dart';
 import '../services/password_s.dart';
+import '../utils/clipboard_handler.dart';
 import '../utils/debouncer.dart';
 import 'add_edit_password.dart';
+
+// Simple in-memory cache for favicons
+class FaviconCache {
+  static final FaviconCache _instance = FaviconCache._internal();
+  factory FaviconCache() => _instance;
+  FaviconCache._internal();
+
+  final Map<String, Uint8List> _cache = {};
+
+  Future<Uint8List?> get(String url) async {
+    if (_cache.containsKey(url)) {
+      return _cache[url];
+    }
+
+    try {
+      final response = await http.get(Uri.parse(url));
+      if (response.statusCode == 200) {
+        _cache[url] = response.bodyBytes;
+        return response.bodyBytes;
+      }
+    } catch (e) {
+      // Log or handle error
+    }
+    return null;
+  }
+}
 
 class HomeScreen extends StatefulWidget {
   const HomeScreen({super.key});
@@ -182,7 +210,7 @@ class _HomeScreenState extends State<HomeScreen> {
           if (filteredPasswords.isEmpty) {
             return const Center(
               child: Text(
-                'No passwords found',
+                'No passwords match your search or filter.',
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 18, color: Colors.grey),
               ),
@@ -229,7 +257,7 @@ class _HomeScreenState extends State<HomeScreen> {
                             label: Text(cat),
                             selected: _selectedFilter == cat,
                             selectedColor: color,
-                            backgroundColor: color.withValues(alpha: 0.3),
+                            backgroundColor: color.withAlpha(75),
                             labelStyle: TextStyle(
                               color: _selectedFilter == cat
                                   ? Colors.white
@@ -278,25 +306,6 @@ class PasswordTile extends StatefulWidget {
 class _PasswordTileState extends State<PasswordTile> {
   bool _isPasswordVisible = false;
 
-  void _copyToClipboard(String text, String label) {
-    Clipboard.setData(ClipboardData(text: text));
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const Icon(Icons.check_circle, color: Colors.green),
-            const SizedBox(width: 10),
-            Text('$label copied to clipboard for 30s'),
-          ],
-        ),
-        behavior: SnackBarBehavior.floating,
-      ),
-    );
-    Future.delayed(const Duration(seconds: 30), () {
-      Clipboard.setData(const ClipboardData(text: ''));
-    });
-  }
-
   @override
   Widget build(BuildContext context) {
     final hasWebsite = widget.passwordEntry.website?.isNotEmpty ?? false;
@@ -310,7 +319,10 @@ class _PasswordTileState extends State<PasswordTile> {
       child: Container(
         decoration: BoxDecoration(
           gradient: LinearGradient(
-            colors: [Colors.teal.shade700, Colors.tealAccent.shade100],
+            colors: [
+              Colors.teal.shade700.withAlpha(200),
+              Colors.teal.shade900.withAlpha(230)
+            ],
             begin: Alignment.topLeft,
             end: Alignment.bottomRight,
           ),
@@ -328,14 +340,28 @@ class _PasswordTileState extends State<PasswordTile> {
                   radius: 24,
                   backgroundColor: Colors.white,
                   child: hasWebsite
-                      ? Image.network(
-                          faviconUrl,
-                          fit: BoxFit.contain,
-                          errorBuilder: (context, error, stackTrace) {
-                            return const Icon(
-                              Icons.vpn_key_outlined,
-                              color: Colors.teal,
-                              size: 28,
+                      ? FutureBuilder<Uint8List?>(
+                          future: FaviconCache().get(faviconUrl),
+                          builder: (context, snapshot) {
+                            if (snapshot.connectionState ==
+                                ConnectionState.waiting) {
+                              return const CircularProgressIndicator(
+                                strokeWidth: 2,
+                              );
+                            }
+                            if (snapshot.hasData && snapshot.data != null) {
+                              return Image.memory(
+                                snapshot.data!,
+                                fit: BoxFit.contain,
+                              );
+                            }
+                            return const Tooltip(
+                              message: 'Could not load favicon',
+                              child: Icon(
+                                Icons.vpn_key_outlined,
+                                color: Colors.teal,
+                                size: 28,
+                              ),
                             );
                           },
                         )
@@ -380,9 +406,10 @@ class _PasswordTileState extends State<PasswordTile> {
                             ),
                             tooltip: 'Copy Email/Username',
                             onPressed: () {
-                              _copyToClipboard(
-                                widget.passwordEntry.username,
-                                'Username/Email',
+                              ClipboardHandler.copyToClipboard(
+                                context,
+                                text: widget.passwordEntry.username,
+                                label: 'Username/Email',
                               );
                             },
                           ),
@@ -431,9 +458,10 @@ class _PasswordTileState extends State<PasswordTile> {
                             ),
                             tooltip: 'Copy Password',
                             onPressed: () {
-                              _copyToClipboard(
-                                widget.passwordEntry.password,
-                                'Password',
+                              ClipboardHandler.copyToClipboard(
+                                context,
+                                text: widget.passwordEntry.password,
+                                label: 'Password',
                               );
                             },
                           ),
@@ -514,14 +542,13 @@ class _PasswordTileState extends State<PasswordTile> {
                     final authService = context.read<AuthService>();
 
                     // Check if user has any app protection
-                    final hasProtection =
-                        authService.canCheckBiometrics ||
+                    final hasProtection = authService.canCheckBiometrics ||
                         authService.availableBiometrics.isNotEmpty;
 
                     if (hasProtection) {
                       // User has protection → require authentication
-                      final canProceed = await authService
-                          .sensitiveActionWithBiometrics();
+                      final canProceed =
+                          await authService.sensitiveActionWithBiometrics();
 
                       if (!canProceed) {
                         if (!context.mounted) return;
@@ -568,14 +595,13 @@ class _PasswordTileState extends State<PasswordTile> {
                     final authService = context.read<AuthService>();
 
                     // Check if user has any app protection
-                    final hasProtection =
-                        authService.canCheckBiometrics ||
+                    final hasProtection = authService.canCheckBiometrics ||
                         authService.availableBiometrics.isNotEmpty;
 
                     if (hasProtection) {
                       // User has protection → require authentication
-                      final canProceed = await authService
-                          .sensitiveActionWithBiometrics();
+                      final canProceed =
+                          await authService.sensitiveActionWithBiometrics();
 
                       if (!canProceed) {
                         if (!context.mounted) return;
@@ -650,8 +676,8 @@ class _PasswordTileState extends State<PasswordTile> {
           padding: EdgeInsets.zero,
           icon: const Icon(Icons.copy, size: 18, color: Colors.white70),
           tooltip: 'Copy $label',
-          onPressed: () =>
-              _copyToClipboard(widget.passwordEntry.username, 'Username/Email'),
+          onPressed: () => ClipboardHandler.copyToClipboard(context,
+              text: value, label: label),
         ),
       ],
     );
@@ -689,9 +715,9 @@ Future<void> _deletePasswordDialog(BuildContext context, String id) async {
                 const SnackBar(content: Text('Password deleted.')),
               );
             } catch (e) {
-              // messenger.showSnackBar(
-              //   SnackBar(content: Text('Failed to delete password: $e')),
-              // );
+              messenger.showSnackBar(
+                SnackBar(content: Text('Failed to delete password: $e')),
+              );
             }
           },
         ),

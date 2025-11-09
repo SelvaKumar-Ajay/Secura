@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
@@ -51,32 +49,12 @@ class AuthService with ChangeNotifier {
   Future<void> _onAuthStateChanged(User? user) async {
     _user = user;
     if (user == null) {
-      // If user logs out, lock the app and clear secure storage.
+      // If user logs out, lock the app, clear master key, and clear secure storage.
       _isAppLocked = true;
+      _masterKey = null;
       await SecurePrefs.clearAll();
-    } else {
-      // Try restoring master key from secure storage on restart
-      await _restoreMasterKey();
     }
     notifyListeners();
-  }
-
-  /// Save master key securely
-  Future<void> _persistMasterKey(SecretKey key) async {
-    final bytes = await key.extractBytes();
-    await SecurePrefs.writeSecure('masterKey', base64UrlEncode(bytes));
-  }
-
-  /// Restore master key securely
-  Future<void> _restoreMasterKey() async {
-    final savedKeyB64 = await SecurePrefs.readSecure('masterKey');
-    if (savedKeyB64 != null) {
-      final keyBytes = base64Url.decode(savedKeyB64);
-      _masterKey = SecretKey(keyBytes);
-      debugPrint('Restored master key from secure storage');
-    } else {
-      debugPrint('No master key in secure storage, fallback to unwrap later');
-    }
   }
 
   /// Signs in a user with email and password.
@@ -87,41 +65,11 @@ class AuthService with ChangeNotifier {
     // required String userName,
   }) async {
     try {
-      final cred = await _auth.signInWithEmailAndPassword(
-        email: email,
-        password: password,
-      );
+      await _auth.signInWithEmailAndPassword(email: email, password: password);
 
-      // Derive master key from user password
-      final uid = cred.user!.uid;
-
-      final doc = await _firestore.collection('users').doc(uid).get();
-      if (!doc.exists) return "User encryption data missing";
-
-      final data = doc.data()!;
-      final wrapped = data['wrapped'] as String;
-      final nonce = data['nonce'] as String;
-      final salt = data['salt'] as String;
-      final mac = data['mac'] as String;
-
-      // Unwrap master key
-      final masterKey = await unwrapMasterKey(
-        wrappedB64: wrapped,
-        nonceB64: nonce,
-        macB64: mac,
-        saltB64: salt,
-        password: password,
-      );
-
-      _masterKey = masterKey;
-      await _persistMasterKey(masterKey);
-
-      // After successful Firebase login, prompt for biometrics to unlock the app.
+      // After successful Firebase login, unlock the vault to get the master key.
       await SecurePrefs.writeSecure('email', email);
-
-      await authenticateWithBiometrics();
-
-      return null;
+      return await unlockVault(password);
     } on FirebaseAuthException catch (e) {
       return e.message;
     }
@@ -140,9 +88,6 @@ class AuthService with ChangeNotifier {
         password: password,
       );
 
-      // After successful Firebase login, prompt for biometrics to unlock the app.
-      await SecurePrefs.writeSecure('email', email);
-
       final uid = cred.user!.uid;
 
       // Generate a new AES master key
@@ -159,7 +104,6 @@ class AuthService with ChangeNotifier {
 
       // Keep master key in memory
       _masterKey = masterKey;
-      await _persistMasterKey(masterKey);
 
       await SecurePrefs.writeSecure('email', email);
       await authenticateWithBiometrics();
@@ -172,11 +116,92 @@ class AuthService with ChangeNotifier {
 
   /// Signs out the current user.
   Future<void> signOut() async {
+    await _auth.signOut();
     _user = null;
     _masterKey = null;
-    SecurePrefs.clearAll();
-    await _auth.signOut();
+    _isAppLocked = true;
+    await SecurePrefs.clearAll();
     notifyListeners();
+  }
+
+  /// Unwraps the master key using the password and stores it in memory.
+  Future<String?> unlockVault(String password) async {
+    if (_user == null) return 'Not signed in.';
+    try {
+      final doc = await _firestore.collection('users').doc(_user!.uid).get();
+      if (!doc.exists) return "User encryption data missing.";
+
+      final data = doc.data()!;
+      final wrapped = data['wrapped'] as String;
+      final nonce = data['nonce'] as String;
+      final salt = data['salt'] as String;
+      final mac = data['mac'] as String;
+
+      final masterKey = await unwrapMasterKey(
+        wrappedB64: wrapped,
+        nonceB64: nonce,
+        macB64: mac,
+        saltB64: salt,
+        password: password,
+      );
+
+      _masterKey = masterKey;
+      _isAppLocked = false;
+      _lastUnlockedAt = DateTime.now();
+      notifyListeners();
+      return null; // Success
+    } on Exception {
+      // Generic error for wrong password to avoid enumeration attacks.
+      return 'Incorrect password. Please try again.';
+    }
+  }
+
+  /// Changes the user's master password for both Auth and Firestore.
+  Future<String?> changeMasterPassword({
+    required String oldPassword,
+    required String newPassword,
+  }) async {
+    if (_masterKey == null) {
+      return 'Vault is locked. Please restart the app and unlock it first.';
+    }
+    if (_user == null) {
+      return 'You are not signed in.';
+    }
+
+    // 1. Re-authenticate with the old password to ensure user is verified.
+    try {
+      final cred = EmailAuthProvider.credential(
+        email: _user!.email!,
+        password: oldPassword,
+      );
+      await _user!.reauthenticateWithCredential(cred);
+    } on FirebaseAuthException catch (e) {
+      return 'Incorrect current password. ${e.message}';
+    }
+
+    // 2. Update the password in Firebase Authentication.
+    try {
+      await _user!.updatePassword(newPassword);
+    } on FirebaseAuthException catch (e) {
+      return 'Failed to update password: ${e.message}';
+    }
+
+    // 3. Re-wrap the in-memory master key with the new password.
+    try {
+      final newWrappedData = await wrapMasterKey(
+        masterKey: _masterKey!,
+        password: newPassword,
+      );
+
+      // 4. Update the wrapped key data in Firestore.
+      await _firestore.collection('users').doc(_user!.uid).set(newWrappedData);
+    } catch (e) {
+      // This is a critical failure state. The user's login password has changed,
+      // but their data is still encrypted with the old one.
+      return 'CRITICAL: Password updated, but failed to re-encrypt vault. Please contact support.';
+    }
+
+    return null; // Success
   }
 
   // Function to handle biometric authentication.

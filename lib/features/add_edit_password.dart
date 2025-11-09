@@ -50,9 +50,14 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
     'Shopping',
     'Work',
     'Entertainment',
+    'Email',
+    'Gaming',
+    'Travel',
+    'Utilities',
   ];
 
   late List<String> _categories;
+  late List<String> _customCategories;
 
   @override
   void initState() {
@@ -89,8 +94,6 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
     );
 
     // Build categories: defaults + persisted custom categories
-    final savedCustom = Prefs.getStringList('custom_categories');
-    // Title-case each item for consistency
     List<String> normalize(List<String> list) {
       return list
           .map((s) => s.trim())
@@ -100,13 +103,14 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
           .toList();
     }
 
+    final savedCustom = Prefs.getStringList('custom_categories');
+    _customCategories = normalize(savedCustom);
     final normalizedDefaults = normalize(_defaultCategories);
-    final normalizedSavedCustom = normalize(savedCustom);
 
     // Merge while preserving defaults first, then custom
     final merged = <String>{};
     merged.addAll(normalizedDefaults);
-    merged.addAll(normalizedSavedCustom);
+    merged.addAll(_customCategories);
     _categories = merged.toList();
 
     // Ensure 'Other' is present and placed last
@@ -154,36 +158,72 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
     super.dispose();
   }
 
-  void _saveForm() {
-    if (_formKey.currentState!.validate()) {
-      final newEntry = PasswordEntry(
-        id: widget.passwordEntry?.id,
-        account: _accountController.text.trim(),
-        username: _usernameController.text.trim(),
-        password: _passwordController.text.trim(),
-        createdAt: DateTime.now(),
-        website: _websiteController.text.trim(),
-        notes: _notesController.text.trim(),
-        hint: _hintController.text.trim(),
-        recoveryEmail: _recoveryEmailController.text.trim(),
-        category: _selectedCategory ?? 'General',
-        // category: _categoryController.text.trim(),
-        securityQuestion: _securityQuestionController.text.trim(),
-        securityAnswer: _securityAnswerController.text.trim(),
-      );
-
-      final service = context.read<PasswordService>();
-      _isEditing
-          ? service.updatePassword(newEntry)
-          : service.addPassword(newEntry);
-
-      Navigator.of(context).pop();
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Password for ${_accountController.text} saved.'),
-        ),
-      );
+  void _saveForm() async {
+    if (!_formKey.currentState!.validate()) {
+      return;
     }
+
+    final navigator = Navigator.of(context);
+    final messenger = ScaffoldMessenger.of(context);
+
+    // Password strength check
+    final strength = passNotifier.value;
+    if (strength == PasswordStrength.weak ||
+        strength == PasswordStrength.medium) {
+      final continueAnyway = await _showWeakPasswordWarning(context);
+      if (continueAnyway == false) return; // User cancelled
+    }
+
+    final newEntry = PasswordEntry(
+      id: widget.passwordEntry?.id,
+      account: _accountController.text.trim(),
+      username: _usernameController.text.trim(),
+      password: _passwordController.text.trim(),
+      createdAt: DateTime.now(),
+      website: _websiteController.text.trim(),
+      notes: _notesController.text.trim(),
+      hint: _hintController.text.trim(),
+      recoveryEmail: _recoveryEmailController.text.trim(),
+      category: _selectedCategory ?? 'General',
+      securityQuestion: _securityQuestionController.text.trim(),
+      securityAnswer: _securityAnswerController.text.trim(),
+    );
+
+    // ignore: use_build_context_synchronously
+    final service = context.read<PasswordService>();
+    _isEditing
+        ? service.updatePassword(newEntry)
+        : service.addPassword(newEntry);
+
+    if (!mounted) return;
+
+    navigator.pop();
+    messenger.showSnackBar(
+      SnackBar(content: Text('Password for ${_accountController.text} saved.')),
+    );
+  }
+
+  Future<bool?> _showWeakPasswordWarning(BuildContext context) {
+    return showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Weak Password'),
+        content: const Text(
+          'This password is weak and can be easily guessed. Are you sure you want to use it?',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Use Anyway'),
+          ),
+        ],
+      ),
+    );
   }
 
   Future<void> _addNewCategoryDialog(BuildContext context) async {
@@ -218,13 +258,72 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
     );
 
     if (newCategory != null && newCategory.isNotEmpty) {
+      final normalizedCategory =
+          newCategory[0].toUpperCase() + newCategory.substring(1);
+
+      // Don't add if it already exists (case-insensitive check)
+      if (_categories.any(
+        (c) => c.toLowerCase() == normalizedCategory.toLowerCase(),
+      )) {
+        setState(() {
+          _selectedCategory = _categories.firstWhere(
+            (c) => c.toLowerCase() == normalizedCategory.toLowerCase(),
+          );
+          _categoryController.text = _selectedCategory!;
+        });
+        return;
+      }
+
       setState(() {
-        _categories.insert(_categories.length - 1, newCategory);
-        _selectedCategory = newCategory;
+        _customCategories.add(normalizedCategory);
+        _categories.insert(_categories.length - 1, normalizedCategory);
+        _selectedCategory = normalizedCategory;
+        _categoryController.text = _selectedCategory!;
       });
 
-      // Optionally persist categories
-      Prefs.setStringList('categories', _categories);
+      // Persist custom categories
+      Prefs.setStringList('custom_categories', _customCategories);
+    }
+  }
+
+  void _deleteCategory(String category) async {
+    // This will be called from the dropdown item's button.
+    // First, we need to close the dropdown menu.
+    Navigator.of(context).pop();
+
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Category?'),
+        content: Text(
+          'Are you sure you want to delete the category "$category"? This cannot be undone.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(backgroundColor: Colors.red),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirm == true) {
+      setState(() {
+        _categories.remove(category);
+        _customCategories.remove(category);
+
+        if (_selectedCategory == category) {
+          _selectedCategory = 'General';
+          _categoryController.text = 'General';
+        }
+      });
+
+      Prefs.setStringList('custom_categories', _customCategories);
     }
   }
 
@@ -244,13 +343,13 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
           key: _formKey,
           child: ListView(
             keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
-            padding: EdgeInsets.all(16),
+            padding: const EdgeInsets.all(16),
             children: [
               TextFormField(
                 controller: _accountController,
                 textInputAction: TextInputAction.next,
                 keyboardType: TextInputType.text,
-                autofillHints: [AutofillHints.name],
+                autofillHints: const [AutofillHints.name],
                 decoration: const InputDecoration(
                   labelText: 'Account (e.g., Google)',
                 ),
@@ -265,7 +364,10 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
                 focusNode: _usernameFocus,
                 textInputAction: TextInputAction.next,
                 keyboardType: TextInputType.emailAddress,
-                autofillHints: [AutofillHints.username, AutofillHints.email],
+                autofillHints: const [
+                  AutofillHints.username,
+                  AutofillHints.email,
+                ],
                 decoration: const InputDecoration(
                   labelText: 'Username / Email',
                 ),
@@ -283,7 +385,7 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
                 enableSuggestions: false,
                 autocorrect: false,
                 keyboardType: TextInputType.visiblePassword,
-                autofillHints: [AutofillHints.password],
+                autofillHints: const [AutofillHints.password],
                 decoration: const InputDecoration(labelText: 'Password'),
                 validator: (value) =>
                     value!.isEmpty ? 'Please enter a password' : null,
@@ -296,14 +398,39 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
               ),
               DropdownButtonFormField<String>(
                 initialValue: _selectedCategory,
+                isExpanded: true,
                 items: _categories.map((cat) {
-                  return DropdownMenuItem<String>(value: cat, child: Text(cat));
+                  final isCustom = _customCategories.contains(cat);
+                  return DropdownMenuItem<String>(
+                    value: cat,
+                    child: Row(
+                      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                      children: [
+                        Text(cat),
+                        if (isCustom)
+                          InkWell(
+                            onTap: () => _deleteCategory(cat),
+                            child: const Padding(
+                              padding: EdgeInsets.symmetric(horizontal: 8.0),
+                              child: Icon(
+                                Icons.close,
+                                size: 18,
+                                color: Colors.grey,
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  );
                 }).toList(),
                 onChanged: (value) async {
                   if (value == 'Other') {
                     await _addNewCategoryDialog(context);
                   } else {
-                    setState(() => _selectedCategory = value);
+                    setState(() {
+                      _selectedCategory = value;
+                      _categoryController.text = _selectedCategory!;
+                    });
                   }
                 },
                 decoration: const InputDecoration(
@@ -353,17 +480,27 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
                     focusNode: _websiteFocus,
                     textInputAction: TextInputAction.next,
                     keyboardType: TextInputType.url,
-                    autofillHints: [AutofillHints.url],
+                    autofillHints: const [AutofillHints.url],
                     decoration: const InputDecoration(
                       labelText: 'Website / URL',
                     ),
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return null;
+                      }
+                      final uri = Uri.tryParse(value);
+                      if (uri == null || !uri.hasAbsolutePath) {
+                        return 'Please enter a valid URL';
+                      }
+                      return null;
+                    },
                   ),
                   const SizedBox(height: 12),
                   TextFormField(
                     controller: _hintController,
                     textInputAction: TextInputAction.next,
                     keyboardType: TextInputType.multiline,
-                    autofillHints: [AutofillHints.name],
+                    autofillHints: const [AutofillHints.name],
                     decoration: const InputDecoration(
                       labelText: 'Password Hint',
                     ),
@@ -373,7 +510,7 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
                     controller: _recoveryEmailController,
                     textInputAction: TextInputAction.next,
                     keyboardType: TextInputType.emailAddress,
-                    autofillHints: [AutofillHints.email],
+                    autofillHints: const [AutofillHints.email],
                     decoration: const InputDecoration(
                       labelText: 'Recovery Email / Phone',
                     ),
@@ -404,7 +541,7 @@ class _AddEditPasswordScreenState extends State<AddEditPasswordScreen> {
                     maxLines: 3,
                     textInputAction: TextInputAction.done,
                     keyboardType: TextInputType.multiline,
-                    autofillHints: [AutofillHints.name],
+                    autofillHints: const [AutofillHints.name],
                     decoration: const InputDecoration(
                       labelText: 'Notes',
                       alignLabelWithHint: true,
