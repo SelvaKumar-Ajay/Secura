@@ -75,7 +75,7 @@ Firebase project set up (with Firestore enabled)
 Setup
 
 Clone repo:
-git clone [https://github.com/yourname/secura.git](https://github.com/SelvaKumar-Ajay/Secura.git)
+git clone [https://github.com/SelvaKumar-Ajay/Secura.git]
 
 cd secura
 
